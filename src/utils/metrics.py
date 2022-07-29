@@ -66,7 +66,7 @@ def precision(
     return result / sum(output[1])
 
 
-def bleu_score(
+def calculate_bleu(
         sen_out: str,
         sen_tar: str
 ) -> float:
