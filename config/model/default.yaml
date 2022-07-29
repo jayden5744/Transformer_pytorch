@@ -1,0 +1,20 @@
+# Basic
+max_sequence_len: 50
+d_embedding: 512
+dropout_rate: 0.3
+
+# Encoder
+enc_vocab_size: 8000
+enc_hidden_dim: 512
+enc_layers: 6
+enc_heads: 8
+enc_head_dim: 512
+enc_ff_dim: 1024
+
+# Decoder
+dec_vocab_size: 8000
+dec_hidden_dim: 512
+dec_layers: 6
+dec_heads: 8
+dec_head_dim: 512
+dec_ff_dim: 1024
