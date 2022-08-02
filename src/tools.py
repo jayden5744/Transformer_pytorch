@@ -30,7 +30,7 @@ class Trainer(object):
             ignore_index=self.args.data.pad_id,
             label_smoothing=self.args.trainer.label_smoothing_value
         )
-        self.early_stopping = EarlyStopping(patience=self.args.trainer.early_stopping, verbose=True)
+        self.early_stopping = EarlyStopping(patience=self.args.trainer.early_stopping, args=cfg, verbose=True)
         wandb.init()
         wandb.config.update(self.args)
 
@@ -80,11 +80,10 @@ class Trainer(object):
                                   '=>  loss : {5:10f}  accuracy : {6:12f}   PPL : {7:10f}'
                                   .format(epoch, i, epoch_step, step, total_step, val_loss, val_accuracy, val_ppl))
 
-                            # todo: early stopping 수정
-                            self.early_stopping(val_loss, model, step)
+                            self.early_stopping(val_loss, model, epoch, step)
 
                     if step % self.args.trainer.save_step == 0:
-                        self.save_model(model, epoch, step)
+                        self.save_model(model, '{0:06d}_transformer.pth'.format(step), epoch)
 
                     if self.early_stopping.early_stop:
                         break
@@ -94,7 +93,7 @@ class Trainer(object):
                     step += 1
 
                 except Exception as e:
-                    self.save_model(model, epoch, step)
+                    self.save_model(model, '{0:06d}_transformer.pth'.format(step), epoch)
                     raise e
 
             if self.early_stopping.early_stop:
@@ -256,15 +255,14 @@ class Trainer(object):
             translation_sentence.append(word)
         return ''.join(translation_sentence).replace('▁', ' ').strip()
 
-    def save_model(self, model: nn.Module, epoch: int, step: int) -> None:
-        model_name = '{0:06d}_transformer.pth'.format(step)
+    def save_model(self, model: nn.Module, model_name: str, epoch: int) -> None:
         model_path = os.path.join(self.args.data.model_path, model_name)
         torch.save(
             {
                 'epoch': epoch,
-                'step': step,
-                'encoder_parameter': self.get_encoder_params(),
-                'decoder_parameter': self.get_decoder_params(),
+                "data": self.args["data"],
+                "trainer": self.args["trainer"],
+                "model": self.args["model"],
                 'model_state_dict': model.state_dict()
             }, model_path
         )

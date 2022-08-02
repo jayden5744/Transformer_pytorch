@@ -1,10 +1,14 @@
 import hydra
 from omegaconf import DictConfig
 
+from src.tools import Trainer
+
 
 @hydra.main(config_path="config", config_name="config")
 def train(cfg: DictConfig) -> None:
-    pass
+    trainer = Trainer(cfg)
+    trainer.train()
+
 
 
 @hydra.main(config_path="config", config_name="config")
