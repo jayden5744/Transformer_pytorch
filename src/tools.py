@@ -60,7 +60,9 @@ class Trainer(object):
 
                     if step % self.args.trainer.train_step_print == 0:
                         wandb.log({
-                            ""
+                            "Train loss": loss.item(),
+                            "Train Accuracy": accuracy.item(),
+                            "Train PPL": ppl
                         })
                         print('[Train] epoch : {0:2d}  iter: {1:4d}/{2:4d}  step : {3:6d}/{4:6d}  '
                               '=>  loss : {5:10f}  accuracy : {6:12f}  PPL : {7:6f}'
@@ -69,9 +71,15 @@ class Trainer(object):
                     if step % self.args.trainer.valid_step_print == 0:
                         with torch.no_grad():
                             val_loss, val_accuracy, val_ppl = self.valid(model)
+                            wandb.log({
+                                "Valid loss": val_loss,
+                                "Valid Accuracy": val_accuracy,
+                                "Valid PPL": val_ppl
+                            })
                             print('[Val] epoch : {0:2d}  iter: {1:4d}/{2:4d}  step : {3:6d}/{4:6d}  '
                                   '=>  loss : {5:10f}  accuracy : {6:12f}   PPL : {7:10f}'
                                   .format(epoch, i, epoch_step, step, total_step, val_loss, val_accuracy, val_ppl))
+
                             # todo: early stopping 수정
                             self.early_stopping(val_loss, model, step)
 
@@ -233,10 +241,10 @@ class Trainer(object):
         print(f"Target      : {target_sentence}")
         print(f"BLEU Score  : {bleu_score}")
 
-        model.train()
         avg_loss = total_loss / len(self.valid_loader)
         avg_accuracy = total_accuracy / len(self.valid_loader)
         avg_ppl = total_ppl / len(self.valid_loader)
+        model.train()
         return avg_loss, avg_accuracy, avg_ppl
 
     def tensor2sentence(self, indices: torch.Tensor, vocabulary) -> str:
