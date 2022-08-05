@@ -1,9 +1,10 @@
 import math
 import os
-import wandb
-from typing import Tuple
-from omegaconf import DictConfig
+from abc import abstractmethod, ABC
 
+import wandb
+from typing import Tuple, Dict, List
+from omegaconf import DictConfig
 
 import torch
 import torch.nn as nn
@@ -13,18 +14,80 @@ from torch.nn import CrossEntropyLoss
 from torch.utils.data import DataLoader
 
 from src.model import Encoder, Decoder, Transformer
-from src.utils.data_helper import TransformerDataset, create_or_get_voca
+from src.utils.data_helper import TransformerDataset, create_or_get_voca, TransformerTestDataset
 from src.utils.metrics import calculate_bleu
 from src.utils.utils import count_parameters, EarlyStopping
 from src.utils.weight_initialization import select_weight_initialize_method
 
 
-class Trainer(object):
+class AbstractTranslation:
+    def __init__(self):
+        self.args = None
+
+    @abstractmethod
+    def get_model(self):
+        pass
+
+    def get_device(self):
+        return torch.device('cuda' if torch.cuda.is_available() and self.args.trainer.is_gpu else 'cpu')
+
+    def get_encoder_params(self):
+        return {
+            'input_dim': self.args.model.enc_vocab_size,
+            'hid_dim': self.args.model.enc_hidden_dim,
+            'n_layers': self.args.model.enc_layers,
+            'n_heads': self.args.model.enc_heads,
+            'head_dim': self.args.model.enc_head_dim,
+            'pf_dim': self.args.model.enc_ff_dim,
+            'dropout': self.args.model.dropout_rate,
+            'max_length': self.args.model.max_sequence_len,
+            'padding_id': self.args.data.pad_id,
+        }
+
+    def get_decoder_params(self):
+        return {
+            'input_dim': self.args.model.dec_vocab_size,
+            'hid_dim': self.args.model.dec_hidden_dim,
+            'n_layers': self.args.model.dec_layers,
+            'n_heads': self.args.model.dec_heads,
+            'head_dim': self.args.model.dec_head_dim,
+            'pf_dim': self.args.model.dec_ff_dim,
+            'dropout': self.args.model.dropout_rate,
+            'max_length': self.args.model.max_sequence_len,
+            'padding_id': self.args.data.pad_id,
+        }
+
+    def get_voca(self):
+        return create_or_get_voca(
+            save_path=self.args.data.dictionary_path,
+            src_corpus_path=self.args.data.src_train_path,
+            trg_corpus_path=self.args.data.trg_train_path,
+            src_vocab_size=self.args.model.enc_vocab_size,
+            trg_vocab_size=self.args.model.dec_vocab_size,
+            bos_id=self.args.data.bos_id,
+            eos_id=self.args.data.eos_id,
+            unk_id=self.args.data.unk_id,
+            pad_id=self.args.data.pad_id
+        )
+
+    def tensor2sentence(self, indices: torch.Tensor, vocabulary) -> str:
+        translation_sentence = []
+        for idx in indices:
+            word = vocabulary.IdToPiece(idx)
+            if word == self.args.data.eos_id or word == self.args.data.pad_id:
+                break
+            translation_sentence.append(word)
+        return ''.join(translation_sentence).replace('▁', ' ').strip()
+
+
+class Trainer(AbstractTranslation, ABC):
     def __init__(self, cfg: DictConfig):
+        super().__init__()
         self.args = cfg
-        self.device = self.get_device()
         self.optimizer = None
+        self.device = self.get_device()
         self.src_voca, self.trg_voca = self.get_voca()
+
         self.train_loader, self.valid_loader = self.get_loader()
         self.criterion = CrossEntropyLoss(
             ignore_index=self.args.data.pad_id,
@@ -99,32 +162,6 @@ class Trainer(object):
             if self.early_stopping.early_stop:
                 break
 
-    def get_encoder_params(self):
-        return {
-            'input_dim': self.args.model.enc_vocab_size,
-            'hid_dim': self.args.model.enc_hidden_dim,
-            'n_layers': self.args.model.enc_layers,
-            'n_heads': self.args.model.enc_heads,
-            'head_dim': self.args.model.enc_head_dim,
-            'pf_dim': self.args.model.enc_ff_dim,
-            'dropout': self.args.model.dropout_rate,
-            'max_length': self.args.model.max_sequence_len,
-            'padding_id': self.args.data.pad_id,
-        }
-
-    def get_decoder_params(self):
-        return {
-            'input_dim': self.args.model.dec_vocab_size,
-            'hid_dim': self.args.model.dec_hidden_dim,
-            'n_layers': self.args.model.dec_layers,
-            'n_heads': self.args.model.dec_heads,
-            'head_dim': self.args.model.dec_head_dim,
-            'pf_dim': self.args.model.dec_ff_dim,
-            'dropout': self.args.model.dropout_rate,
-            'max_length': self.args.model.max_sequence_len,
-            'padding_id': self.args.data.pad_id,
-        }
-
     def get_model(self) -> nn.Module:
         encoder = Encoder(**self.get_encoder_params())
         decoder = Decoder(**self.get_decoder_params())
@@ -134,22 +171,6 @@ class Trainer(object):
             model.cuda()
         model.train()
         return model
-
-    def get_device(self):
-        return torch.device('cuda' if torch.cuda.is_available() and self.args.trainer.is_gpu else 'cpu')
-
-    def get_voca(self):
-        return create_or_get_voca(
-            save_path=self.args.data.dictionary_path,
-            src_corpus_path=self.args.data.src_train_path,
-            trg_corpus_path=self.args.data.trg_train_path,
-            src_vocab_size=self.args.model.enc_vocab_size,
-            trg_vocab_size=self.args.model.dec_vocab_size,
-            bos_id=self.args.data.bos_id,
-            eos_id=self.args.data.eos_id,
-            unk_id=self.args.data.unk_id,
-            pad_id=self.args.data.pad_id
-        )
 
     def get_loader(self) -> Tuple[DataLoader, DataLoader]:
         train_dataset = TransformerDataset(
@@ -246,15 +267,6 @@ class Trainer(object):
         model.train()
         return avg_loss, avg_accuracy, avg_ppl
 
-    def tensor2sentence(self, indices: torch.Tensor, vocabulary) -> str:
-        translation_sentence = []
-        for idx in indices:
-            word = vocabulary.IdToPiece(idx)
-            if word == self.args.data.eos_id or word == self.args.data.pad_id:
-                break
-            translation_sentence.append(word)
-        return ''.join(translation_sentence).replace('▁', ' ').strip()
-
     def save_model(self, model: nn.Module, model_name: str, epoch: int) -> None:
         model_path = os.path.join(self.args.data.model_path, model_name)
         torch.save(
@@ -266,3 +278,100 @@ class Trainer(object):
                 'model_state_dict': model.state_dict()
             }, model_path
         )
+
+
+class Inference(AbstractTranslation, ABC):
+    def __init__(self, check_point: str, is_gpu: bool = False):
+        super().__init__()
+        self.check_point = torch.load(check_point)
+        self.args = self.get_args()
+        self.args.trainer.is_gpu = is_gpu
+        self.model = self.get_model()
+        self.src_voca, self.trg_voca = self.get_voca()
+        self.device = self.get_device()
+
+    def get_args(self) -> DictConfig:
+        return DictConfig({"data": self.check_point["data"], "model": self.check_point["model"],
+                           "trainer": self.check_point["trainer"]})
+
+    def get_model(self) -> nn.Module:
+        encoder = Encoder(**self.get_encoder_params())
+        decoder = Decoder(**self.get_decoder_params())
+        model = Transformer(encoder, decoder)
+        if torch.cuda.is_available() and self.args.trainer.is_gpu:
+            model = nn.DataParallel(model)
+            model.cuda()
+
+        model.load_state_dict(self.check_point["model_state_dict"])
+        model.eval()
+        return model
+
+    def inference(self, sentence: str, debug: bool = True) -> str:
+        enc_input = self.encoder_input_to_vector(sentence)
+        decoder_output = self.greedy_decoder(enc_input)
+        output_sentence = self.tensor2sentence(decoder_output, self.trg_voca)
+        if debug:
+            print(f"Source : {sentence}")
+            print(f"Target : {output_sentence}")
+        return output_sentence
+
+    def batch_inference(self, src_file_path: str, batch_size: int, debug: bool = True) -> List[str]:
+        dataset = TransformerTestDataset(x_path=src_file_path, src_voc=self.src_voca,
+                                         sequence_size=self.args.model.max_sequence_len)
+        loader = DataLoader(dataset, batch_size=batch_size)
+        predicts = []
+        try:
+            for i, data in enumerate(loader):
+                src_input = data
+                decoder_output = self.greedy_decoder(src_input)
+                for src_indices, out_indices in zip(src_input.tolist(), decoder_output):
+                    out_sentence = self.tensor2sentence(out_indices, self.trg_voca)
+                    if debug:
+                        src_sentence = self.tensor2sentence(src_indices, self.src_voca)
+                        print("------ Inference ------")
+                        print(f"Source : {src_sentence}")
+                        print(f"Predict : {out_sentence}")
+                    predicts.append(out_sentence)
+
+        except KeyboardInterrupt:
+            pass
+        return predicts
+
+    def evaluate(self, src_file_path: str, trg_file_path: str, batch_size: int, debug: bool = True):
+        pass
+
+    def greedy_decoder(self, enc_input: Tensor) -> Tensor:
+        batch_size = enc_input.size(0)
+        enc_outputs, _ = self.model.module.encoder(enc_input)
+        dec_input = torch.LongTensor(batch_size, self.args.model.max_sequence_len).fill_(4).to(self.device)
+        decoded_batch = torch.zeros((batch_size, self.args.model.max_sequence_len))
+
+        next_symbol = self.args.data.bos_id
+
+        for i in range(0, self.args.model.max_sequence_len):
+            dec_input[:, i] = next_symbol
+            dec_outputs, _ = self.model.module.decoder(dec_input, enc_input, enc_outputs)
+            prob = dec_outputs.squeeze(0).max(dim=-1, keepdim=False)[1]
+            if batch_size == 1:
+                prob = prob.unsqueeze(dim=0)
+
+            next_symbol = torch.LongTensor(prob.data[:, i].tolist()).to(self.device)
+
+            if batch_size == 1:
+                next_symbol = next_symbol.unsqueeze(dim=0)
+
+            decoded_batch[:, i] = next_symbol
+        return decoded_batch
+
+    def encoder_input_to_vector(self, sentence: str) -> torch.Tensor:
+        idx_list = self.src_voca.EncodeAsIds(sentence)
+        idx_list = self.padding(idx_list, self.src_voca['<pad>'])
+        return torch.tensor([idx_list]).to(self.device)
+
+    def padding(self, idx_list: List[int], padding_id: int) -> List[int]:
+        length = len(idx_list)
+        if length < self.args.model.max_sequence_len:
+            idx_list = idx_list + [padding_id for _ in range(self.args.model.max_sequence_len - len(idx_list))]
+        else:
+            idx_list = idx_list[:self.args.model.max_sequence_len]
+        return idx_list
