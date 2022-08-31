@@ -1,23 +1,25 @@
-import math
 import os
+import math
 from abc import abstractmethod, ABC
+from re import L
+from src.utils.optimizer import InverseSqrt
 
 import wandb
-from typing import Tuple, Dict, List
+from typing import Tuple, List
 from omegaconf import DictConfig
 
 import torch
 import torch.nn as nn
 from torch import Tensor
-from torch.nn import CrossEntropyLoss
-
 from torch.utils.data import DataLoader
 
 from src.model import Encoder, Decoder, Transformer
-from src.utils.data_helper import TransformerDataset, create_or_get_voca, TransformerTestDataset
 from src.utils.metrics import calculate_bleu
 from src.utils.utils import count_parameters, EarlyStopping
 from src.utils.weight_initialization import select_weight_initialize_method
+from src.utils.loss import CrossEntropyLoss
+from src.utils.data_helper import TransformerDataset, create_or_get_voca, TransformerTestDataset
+
 
 
 class AbstractTranslation:
@@ -73,9 +75,10 @@ class AbstractTranslation:
     def tensor2sentence(self, indices: torch.Tensor, vocabulary) -> str:
         translation_sentence = []
         for idx in indices:
-            word = vocabulary.IdToPiece(idx)
-            if word == self.args.data.eos_id or word == self.args.data.pad_id:
+            idx = int(idx)
+            if idx == self.args.data.eos_id or idx == self.args.data.pad_id:
                 break
+            word = vocabulary.IdToPiece(idx)
             translation_sentence.append(word)
         return ''.join(translation_sentence).replace('▁', ' ').strip()
 
@@ -91,11 +94,13 @@ class Trainer(AbstractTranslation, ABC):
         self.train_loader, self.valid_loader = self.get_loader()
         self.criterion = CrossEntropyLoss(
             ignore_index=self.args.data.pad_id,
-            label_smoothing=self.args.trainer.label_smoothing_value
+            smooth_eps=self.args.trainer.label_smoothing_value,
+            from_logits=False
         )
         self.early_stopping = EarlyStopping(patience=self.args.trainer.early_stopping, args=cfg, verbose=True)
-        wandb.init()
-        wandb.config.update(self.args)
+        # Todo : config 가 저장이 안됨
+        wandb.init(config=self.args)
+        
 
     def train(self):
         model = self.get_model()
@@ -113,7 +118,7 @@ class Trainer(AbstractTranslation, ABC):
         epoch_step = len(self.train_loader) + 1
         total_step = self.args.trainer.epochs * epoch_step
         step = 0
-        for epoch in range(self.args.trainer.epoch):
+        for epoch in range(self.args.trainer.epochs):
             for i, data in enumerate(self.train_loader, 1):
                 try:
                     self.optimizer.zero_grad()
@@ -213,8 +218,19 @@ class Trainer(AbstractTranslation, ABC):
                 eps=self.args.trainer.optimizer_e
             )
 
+        elif self.args.trainer.optimizer == "InverseSQRT":
+            return InverseSqrt(
+                warmup=self.args.model.enc_vocab_size,
+                optimizer=torch.optim.Adam(model.parameters(), lr=self.args.trainer.learning_rate,
+                betas=(self.args.trainer.optimizer_b1, self.args.trainer.optimizer_b2),
+                eps=self.args.trainer.optimizer_e,
+                weight_decay=self.args.trainer.weight_decay
+                ),
+                warmup_end_lr=self.args.trainer.learning_rate
+            )
+
         else:
-            raise ValueError("trainer param `optimizer` is one of [Adam] ")
+            raise ValueError("trainer param `optimizer` is one of [Adam, InverseSQRT] ")
 
     def calculate_loss(self, pred, tar) -> Tuple[Tensor, Tensor, float]:
         pred = pred.view(-1, pred.size(-1))
@@ -268,7 +284,11 @@ class Trainer(AbstractTranslation, ABC):
         return avg_loss, avg_accuracy, avg_ppl
 
     def save_model(self, model: nn.Module, model_name: str, epoch: int) -> None:
+        if not os.path.exists(self.args.data.model_path):
+            os.makedirs(self.args.data.model_path)
+
         model_path = os.path.join(self.args.data.model_path, model_name)
+
         torch.save(
             {
                 'epoch': epoch,
@@ -309,7 +329,7 @@ class Inference(AbstractTranslation, ABC):
     def inference(self, sentence: str, debug: bool = True) -> str:
         enc_input = self.encoder_input_to_vector(sentence)
         decoder_output = self.greedy_decoder(enc_input)
-        output_sentence = self.tensor2sentence(decoder_output, self.trg_voca)
+        output_sentence = self.tensor2sentence(decoder_output[0], self.trg_voca)
         if debug:
             print(f"Source : {sentence}")
             print(f"Target : {output_sentence}")
@@ -338,7 +358,35 @@ class Inference(AbstractTranslation, ABC):
         return predicts
 
     def evaluate(self, src_file_path: str, trg_file_path: str, batch_size: int, debug: bool = True):
-        pass
+        dataset = TransformerDataset(
+            x_path=src_file_path,
+            y_path=trg_file_path,
+            src_voc=self.src_voca,
+            trg_voc=self.trg_voca,
+            sequence_size=self.args.model.max_sequence_len
+        )
+        loader = DataLoader(dataset, batch_size=batch_size)
+        result = []
+        try:
+            for i, data in enumerate(loader):
+                src_input, _, trg_output = data
+                decoder_output = self.greedy_decoder(src_input)
+                for src_indices, out_indices, trg_indices in zip(src_input.tolist(), decoder_output, trg_output):
+                    out_sentence = self.tensor2sentence(out_indices, self.trg_voca)
+                    src_sentence = self.tensor2sentence(src_indices, self.src_voca)
+                    trg_sentence = self.tensor2sentence(trg_indices, self.trg_voca)
+                    bleu_score = calculate_bleu(out_sentence, trg_sentence)
+                    if debug:
+                        print("------ Inference ------")
+                        print(f"Source : {src_sentence}")
+                        print(f"Predict : {out_sentence}")
+                        print(f"Target : {trg_sentence}")
+                        print(f"BLEU Score : {bleu_score}")
+                    result.append([src_sentence, out_sentence, trg_sentence, bleu_score])
+
+        except KeyboardInterrupt:
+            pass
+        return result
 
     def greedy_decoder(self, enc_input: Tensor) -> Tensor:
         batch_size = enc_input.size(0)

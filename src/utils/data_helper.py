@@ -13,8 +13,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def create_or_get_voca(
         save_path: str,
-        src_corpus_path: str = None,
-        trg_corpus_path: str = None,
+        src_corpus_path: str,
+        trg_corpus_path: str,
         src_vocab_size: int = 4000,
         trg_vocab_size: int = 4000,
         bos_id: int = 0,
@@ -41,21 +41,23 @@ def create_or_get_voca(
     """
     src_corpus_prefix = f'src_corpus_{src_vocab_size}'
     trg_corpus_prefix = f'trg_corpus_{trg_vocab_size}'
+    
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
 
-    if src_corpus_path and trg_corpus_path:
-        templates = '--input={} --model_prefix={} --vocab_size={} ' \
-                    '--bos_id={} --eos_id={} --unk_id={} --pad_id={}'
-
-        src_model_train_cmd = templates.format(src_corpus_path, src_corpus_prefix, src_vocab_size,
-                                               bos_id, eos_id, unk_id, pad_id)
-        trg_model_train_cmd = templates.format(trg_corpus_path, trg_corpus_prefix, trg_vocab_size,
-                                               bos_id, eos_id, unk_id, pad_id)
-
+    templates = '--input={} --model_prefix={} --vocab_size={} ' \
+                '--bos_id={} --eos_id={} --unk_id={} --pad_id={}'
+    if not check_file(os.path.join(save_path, src_corpus_prefix + '.model')) and not check_file(os.path.join(save_path, src_corpus_prefix + '.vocab')):
+        src_model_train_cmd = templates.format(src_corpus_path, src_corpus_prefix, src_vocab_size, bos_id, eos_id, unk_id, pad_id)
         spm.SentencePieceTrainer.Train(src_model_train_cmd)
-        spm.SentencePieceTrainer.Train(trg_model_train_cmd)
-
         shutil.move(src_corpus_prefix + '.model', save_path)
         shutil.move(src_corpus_prefix + '.vocab', save_path)
+
+            
+    if not check_file(os.path.join(save_path, trg_corpus_prefix + '.model')) and not check_file(os.path.join(save_path, trg_corpus_prefix + '.vocab')):
+        trg_model_train_cmd = templates.format(trg_corpus_path, trg_corpus_prefix, trg_vocab_size, bos_id, eos_id, unk_id, pad_id)    
+        spm.SentencePieceTrainer.Train(trg_model_train_cmd)
+
         shutil.move(trg_corpus_prefix + '.model', save_path)
         shutil.move(trg_corpus_prefix + '.vocab', save_path)
 
@@ -65,21 +67,18 @@ def create_or_get_voca(
     trg_sp.load(os.path.join(save_path, trg_corpus_prefix + '.model'))
     return src_sp, trg_sp
 
+def check_file(path: str) -> bool:
+    if os.path.exists(path):
+        return True
+    return False
+
 
 class AbstractDataset(Dataset, metaclass=ABCMeta):
     def __init__(self, x_path: str, y_path: str, src_voc: Any, trg_voc: Any, sequence_size: int):
         self.x = open(x_path, 'r', encoding='utf-8').readlines()  # korean data 위치
-        self.y = open(y_path, 'r', encoding='utf-8').readlines()  # English data 위치
         self.src_voc = src_voc
-        self.trg_voc = trg_voc
         self.sequence_size = sequence_size
-
         self.BOS, self.EOS, self.PAD = None, None, None
-
-    def __len__(self):
-        if len(self.x) != len(self.y):
-            raise IndexError('not equal x_path, y_path line size')
-        return len(self.x)
 
     def encoder_input_to_vector(self, sentence: str) -> torch.Tensor:
         idx_list = self.src_voc.EncodeAsIds(sentence)  # str -> idx
@@ -111,9 +110,16 @@ class AbstractDataset(Dataset, metaclass=ABCMeta):
 class TransformerDataset(AbstractDataset):
     def __init__(self, x_path: str, y_path: str, src_voc: Any, trg_voc: Any, sequence_size: int):
         super().__init__(x_path, y_path, src_voc, trg_voc, sequence_size)
+        self.y = open(y_path, 'r', encoding='utf-8').readlines()  # English data 위치
+        self.trg_voc = trg_voc
         self.PAD = src_voc['<pad>']
         self.BOS = trg_voc['<s>']
         self.EOS = trg_voc['</s>']
+
+    def __len__(self):
+        if len(self.x) != len(self.y):
+            raise IndexError('not equal x_path, y_path line size')
+        return len(self.x)
 
     def __getitem__(self, idx: int) -> Tuple[Tensor, Tensor, Tensor]:
         encoder_input = self.encoder_input_to_vector(self.x[idx])
@@ -123,7 +129,8 @@ class TransformerDataset(AbstractDataset):
 
 
 class TransformerTestDataset(AbstractDataset, metaclass=ABCMeta):
-    def __init__(self, x_path: str,
+    def __init__(self, 
+                 x_path: str,
                  src_voc: Any,
                  sequence_size: int,
                  y_path: str = None,
@@ -131,6 +138,9 @@ class TransformerTestDataset(AbstractDataset, metaclass=ABCMeta):
                  ):
         super().__init__(x_path, y_path, src_voc, trg_voc, sequence_size)
         self.PAD = src_voc['<pad>']
+
+    def __len__(self):
+        return len(self.x)
 
     def __getitem__(self, idx: int) -> torch.Tensor:
         encoder_input = self.encoder_input_to_vector(self.x[idx])
