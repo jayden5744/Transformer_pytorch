@@ -1,13 +1,14 @@
 epochs: 200
-batch_size: 512
+batch_size: 128
 learning_rate: 5e-4
 early_stopping: 100
 
 # optimizer
-optimizer: "Adam"
+optimizer: "InverseSQRT"   # choice of [Adam, InverseSQRT]
 optimizer_b1: 0.9
 optimizer_b2: 0.98
 optimizer_e: 10e-9
+weight_decay: 0.0001
 
 # regularization
 label_smoothing_value: 0.1
@@ -16,10 +17,10 @@ label_smoothing_value: 0.1
 activate: "Relu"
 
 # weight initialization of choice [he, xavier] and Weight distribution of choice [uniform, normal]
-weight_init: "he"
+weight_init: "xavier"
 weight_distribution: "uniform"
 
-is_gpu: false
+is_gpu: true
 
 train_step_print: 10
 valid_step_print: 100
