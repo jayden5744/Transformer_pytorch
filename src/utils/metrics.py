@@ -63,7 +63,10 @@ def precision(
         if output[0][i] in target[0]:
             idx = target[0].index(output[0][i])
             result += min(output[1][i], target[1][idx])
-    return result / sum(output[1])
+    try:
+        return result / sum(output[1])
+    except ZeroDivisionError:
+        return 0
 
 
 def calculate_bleu(
