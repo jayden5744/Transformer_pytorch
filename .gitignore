@@ -135,5 +135,7 @@ Data/*
 Dictionary/*
 Model/*
 Results/*
-
-
+*.pth
+wandb/*
+outputs/*
+*.csv
